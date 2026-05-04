@@ -1,0 +1,83 @@
+{
+  "skills": [
+    {
+      "id": "agent-messaging",
+      "name": "Agent Messaging (AMP)",
+      "description": "Send and receive messages with other AI agents using the Agent Messaging Protocol",
+      "category": "essential",
+      "tier": "free",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/agentmessaging/claude-plugin.git"
+      },
+      "recommended": true
+    },
+    {
+      "id": "agent-identity",
+      "name": "Agent Identity (AID)",
+      "description": "Cryptographic identity and authentication for AI agents",
+      "category": "essential",
+      "tier": "free",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/agentmessaging/agent-identity.git"
+      },
+      "recommended": true
+    },
+    {
+      "id": "memory-search",
+      "name": "Semantic Memory",
+      "description": "Search conversation history and build long-term memory",
+      "category": "intelligence",
+      "tier": "free",
+      "source": {
+        "type": "local",
+        "path": "src/skills/memory-search"
+      }
+    },
+    {
+      "id": "graph-query",
+      "name": "Code Graph",
+      "description": "Query codebase relationships and dependencies",
+      "category": "intelligence",
+      "tier": "pro",
+      "source": {
+        "type": "local",
+        "path": "src/skills/graph-query"
+      }
+    },
+    {
+      "id": "docs-search",
+      "name": "Docs Search",
+      "description": "Search auto-generated codebase documentation",
+      "category": "intelligence",
+      "tier": "free",
+      "source": {
+        "type": "local",
+        "path": "src/skills/docs-search"
+      }
+    },
+    {
+      "id": "planning",
+      "name": "Planning",
+      "description": "Create and manage persistent planning files for complex task execution",
+      "category": "operations",
+      "tier": "free",
+      "source": {
+        "type": "local",
+        "path": "src/skills/planning"
+      }
+    },
+    {
+      "id": "agent-management",
+      "name": "Agent Management",
+      "description": "Create, manage, and orchestrate AI agents using AI Maestro CLI",
+      "category": "operations",
+      "tier": "pro",
+      "source": {
+        "type": "local",
+        "path": "src/skills/agent-management"
+      }
+    }
+  ]
+}
