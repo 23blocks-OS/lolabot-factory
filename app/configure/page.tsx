@@ -73,7 +73,6 @@ function ConfigureContent() {
           buildId: data.buildId,
           status: 'complete',
           installUrl: data.installUrl,
-          downloadUrl: data.downloadUrl,
         }
       )
     } catch {

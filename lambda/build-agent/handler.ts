@@ -4,15 +4,16 @@
  * Receives a build request (personality + skills + name), clones repos,
  * runs build-plugin.sh, zips output, uploads to S3.
  *
- * Container image: needs git, jq, bash, zip, node 20.
+ * Container image: needs git, jq, bash, zip, node 22.
  * Memory: 512MB, Timeout: 60s
  */
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { execFileSync } from 'child_process'
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
+import { generateManifest } from './manifest'
 
 const s3 = new S3Client({})
 const BUILDS_BUCKET = process.env.BUILDS_BUCKET || 'lolabot-builds'
@@ -85,21 +86,46 @@ export async function handler(event: BuildEvent) {
     }
   }
 
+  // A skill id that duplicates the agent name would overwrite a bundled skill
+  try {
+    generateManifest(personalityId, skills ?? [], agentName)
+  } catch (err) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: err instanceof Error ? err.message : 'Invalid request' }),
+    }
+  }
+
   const buildId = randomUUID()
   const workDir = `/tmp/build-${buildId}`
+  const agentsDir = `/tmp/agents-${buildId}`
+  const zipPath = `/tmp/${buildId}.zip`
+  // Lambda has no writable HOME; git and npm want one
+  const env = { ...process.env, HOME: '/tmp', GIT_TERMINAL_PROMPT: '0' }
+
+  const cleanup = () => {
+    for (const p of [workDir, agentsDir, zipPath]) {
+      try {
+        rmSync(p, { recursive: true, force: true })
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
 
   try {
     // 1. Clone plugin builder (shallow)
-    execFileSync('git', ['clone', '--depth', '1', '--', PLUGINS_REPO, workDir], { stdio: 'pipe' })
+    execFileSync('git', ['clone', '--depth', '1', '--', PLUGINS_REPO, workDir], { stdio: 'pipe', env, timeout: 20000 })
 
-    // 2. Clone agency-agents (shallow)
-    const agentsDir = `${workDir}/.build-cache/agency-agents`
-    execFileSync('git', ['clone', '--depth', '1', '--', AGENTS_REPO, agentsDir], { stdio: 'pipe' })
+    // 2. Clone agency-agents (shallow), outside workDir: build-plugin.sh --clean
+    //    deletes workDir/.build-cache
+    execFileSync('git', ['clone', '--depth', '1', '--', AGENTS_REPO, agentsDir], { stdio: 'pipe', env, timeout: 20000 })
 
     // 3. Find the personality file
     const personalityFile = findFile(agentsDir, `${personalityId}.md`)
 
     if (!personalityFile) {
+      cleanup()
       return {
         statusCode: 404,
         body: JSON.stringify({ error: `Personality ${personalityId} not found` }),
@@ -119,27 +145,43 @@ export async function handler(event: BuildEvent) {
     execFileSync('bash', ['./build-plugin.sh', '--clean'], {
       cwd: workDir,
       stdio: 'pipe',
+      env,
       timeout: 45000,
     })
 
     // 7. Zip output
-    const zipPath = `/tmp/${buildId}.zip`
     execFileSync('zip', ['-r', zipPath, 'ai-maestro/'], { cwd: `${workDir}/plugins`, stdio: 'pipe' })
 
     // 8. Upload to S3
     const zipContent = readFileSync(zipPath)
+    const sha256 = createHash('sha256').update(zipContent).digest('hex')
     await s3.send(
       new PutObjectCommand({
         Bucket: BUILDS_BUCKET,
         Key: `builds/${buildId}.zip`,
         Body: zipContent,
         ContentType: 'application/zip',
+        ChecksumSHA256: createHash('sha256').update(zipContent).digest('base64'),
+      })
+    )
+    // Build metadata read by the install-script Lambda. Written after the zip,
+    // so a build is only installable once its checksum exists.
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: BUILDS_BUCKET,
+        Key: `builds/${buildId}.json`,
+        Body: JSON.stringify({
+          buildId,
+          sha256,
+          size: zipContent.length,
+          createdAt: new Date().toISOString(),
+        }),
+        ContentType: 'application/json',
       })
     )
 
     // 9. Cleanup
-    rmSync(workDir, { recursive: true, force: true })
-    rmSync(zipPath, { force: true })
+    cleanup()
 
     return {
       statusCode: 200,
@@ -147,16 +189,11 @@ export async function handler(event: BuildEvent) {
         buildId,
         status: 'complete',
         installUrl: `https://lolabots.com/api/install/${buildId}`,
-        downloadUrl: `https://${BUILDS_BUCKET}.s3.amazonaws.com/builds/${buildId}.zip`,
+        sha256,
       }),
     }
   } catch (err) {
-    // Cleanup on error
-    try {
-      rmSync(workDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    cleanup()
 
     return {
       statusCode: 500,
@@ -165,98 +202,5 @@ export async function handler(event: BuildEvent) {
         details: err instanceof Error ? err.message : String(err),
       }),
     }
-  }
-}
-
-function generateManifest(
-  personalityId: string,
-  skills: string[],
-  agentName: string
-) {
-  const sources: Array<{
-    type: string
-    url?: string
-    path?: string
-    mappings: Array<{ from: string; to: string }>
-  }> = []
-
-  // Personality source
-  sources.push({
-    type: 'local',
-    path: './src',
-    mappings: [
-      {
-        from: `personalities/${personalityId}.md`,
-        to: `skills/${agentName}/SKILL.md`,
-      },
-    ],
-  })
-
-  // Skill sources (map skill IDs to their git/local sources)
-  const SKILL_SOURCES: Record<
-    string,
-    { type: string; url?: string; path?: string; targetDir: string }
-  > = {
-    'agent-messaging': {
-      type: 'git',
-      url: 'https://github.com/agentmessaging/claude-plugin.git',
-      targetDir: 'skills/agent-messaging',
-    },
-    'agent-identity': {
-      type: 'git',
-      url: 'https://github.com/agentmessaging/agent-identity.git',
-      targetDir: 'skills/agent-identity',
-    },
-    'memory-search': {
-      type: 'local',
-      path: './src',
-      targetDir: 'skills/memory-search',
-    },
-    'graph-query': {
-      type: 'local',
-      path: './src',
-      targetDir: 'skills/graph-query',
-    },
-    'docs-search': {
-      type: 'local',
-      path: './src',
-      targetDir: 'skills/docs-search',
-    },
-    planning: {
-      type: 'local',
-      path: './src',
-      targetDir: 'skills/planning',
-    },
-    'agent-management': {
-      type: 'local',
-      path: './src',
-      targetDir: 'skills/agent-management',
-    },
-  }
-
-  for (const skillId of skills) {
-    const source = SKILL_SOURCES[skillId]
-    if (!source) continue
-
-    if (source.type === 'git') {
-      sources.push({
-        type: 'git',
-        url: source.url,
-        mappings: [{ from: '.', to: source.targetDir }],
-      })
-    } else {
-      sources.push({
-        type: 'local',
-        path: source.path,
-        mappings: [{ from: `skills/${skillId}`, to: source.targetDir }],
-      })
-    }
-  }
-
-  return {
-    name: agentName,
-    version: '1.0.0',
-    description: `Custom agent built by Lolabot Factory`,
-    sources,
   }
 }
