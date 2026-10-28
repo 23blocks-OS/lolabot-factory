@@ -1,6 +1,6 @@
 {
   "name": "lolabot-factory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Build your AI employee in 60 seconds. Pick personality + skills → get installable agent.",
   "scripts": {
@@ -13,7 +13,7 @@
   "dependencies": {
     "gray-matter": "^4.0.3",
     "lucide-react": "^0.468.0",
-    "next": "14.2.21",
+    "next": "14.2.35",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "uuid": "^11.1.0"

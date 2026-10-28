@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/nodejs:20
+FROM public.ecr.aws/lambda/nodejs:22
 
 # Install build dependencies
 RUN dnf install -y git jq zip unzip && dnf clean all
