@@ -24,6 +24,16 @@ export async function handler(event: Event) {
     }
   }
 
+  // Build IDs are UUIDs. Anything else is refused: the ID is written into a
+  // script that people pipe to bash.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(buildId)) {
+    return {
+      statusCode: 400,
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'echo "Error: invalid build ID"',
+    }
+  }
+
   const downloadUrl = `https://${BUILDS_BUCKET}.s3.amazonaws.com/builds/${buildId}.zip`
 
   const script = `#!/bin/bash
@@ -37,9 +47,11 @@ echo ""
 echo "  🤖 Lolabot Factory — Installing your AI agent..."
 echo ""
 
-# Download
+# Download to a private temp file
+ZIP_FILE="\$(mktemp "\${TMPDIR:-/tmp}/lolabot-agent.XXXXXX")"
+trap 'rm -f "\$ZIP_FILE"' EXIT
 echo "  Downloading agent package..."
-if ! curl -fsSL "\$DOWNLOAD_URL" -o /tmp/lolabot-agent.zip; then
+if ! curl -fsSL --proto '=https' --tlsv1.2 "\$DOWNLOAD_URL" -o "\$ZIP_FILE"; then
   echo "  ❌ Download failed. Build may have expired (30-day retention)."
   exit 1
 fi
@@ -53,10 +65,8 @@ fi
 
 # Extract
 mkdir -p "\$INSTALL_DIR"
-unzip -qo /tmp/lolabot-agent.zip -d "\${INSTALL_DIR%/*}"
+unzip -qo "\$ZIP_FILE" -d "\${INSTALL_DIR%/*}"
 
-# Cleanup
-rm /tmp/lolabot-agent.zip
 
 echo ""
 echo "  ✅ Agent installed to \$INSTALL_DIR"

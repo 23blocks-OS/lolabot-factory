@@ -10,13 +10,36 @@
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { randomUUID } from 'crypto'
-import { execSync } from 'child_process'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, readdirSync, statSync } from 'fs'
+import { join } from 'path'
 
 const s3 = new S3Client({})
 const BUILDS_BUCKET = process.env.BUILDS_BUCKET || 'lolabot-builds'
 const AGENTS_REPO = 'https://github.com/23blocks-OS/agency-agents.git'
 const PLUGINS_REPO = 'https://github.com/23blocks-OS/ai-maestro-plugins.git'
+
+// Values from the request end up in file names and in the generated manifest,
+// so they are limited to a safe alphabet. Nothing from the request is ever
+// passed through a shell.
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+const MAX_SKILLS = 32
+
+// Find <name>.md anywhere under dir without invoking a shell
+function findFile(dir: string, fileName: string): string | null {
+  for (const entry of readdirSync(dir)) {
+    if (entry === '.git') continue
+    const full = join(dir, entry)
+    const st = statSync(full)
+    if (st.isDirectory()) {
+      const hit = findFile(full, fileName)
+      if (hit) return hit
+    } else if (st.isFile() && entry === fileName) {
+      return full
+    }
+  }
+  return null
+}
 
 interface BuildEvent {
   body: string
@@ -36,11 +59,29 @@ export async function handler(event: BuildEvent) {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) }
   }
 
-  const { personalityId, skills, agentName } = body
+  const { personalityId, agentName, skills } = (body ?? {}) as Partial<BuildRequest>
   if (!personalityId || !agentName) {
     return {
       statusCode: 400,
       body: JSON.stringify({ error: 'personalityId and agentName required' }),
+    }
+  }
+  if (
+    typeof personalityId !== 'string' ||
+    typeof agentName !== 'string' ||
+    !SAFE_ID.test(personalityId) ||
+    !SAFE_ID.test(agentName) ||
+    (skills !== undefined &&
+      (!Array.isArray(skills) ||
+        skills.length > MAX_SKILLS ||
+        skills.some((x) => typeof x !== 'string' || !SAFE_ID.test(x))))
+  ) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({
+        error:
+          'personalityId, agentName and skills may only contain letters, numbers, dashes and underscores (max 64 characters)',
+      }),
     }
   }
 
@@ -49,17 +90,14 @@ export async function handler(event: BuildEvent) {
 
   try {
     // 1. Clone plugin builder (shallow)
-    execSync(`git clone --depth 1 ${PLUGINS_REPO} ${workDir}`, { stdio: 'pipe' })
+    execFileSync('git', ['clone', '--depth', '1', '--', PLUGINS_REPO, workDir], { stdio: 'pipe' })
 
     // 2. Clone agency-agents (shallow)
     const agentsDir = `${workDir}/.build-cache/agency-agents`
-    execSync(`git clone --depth 1 ${AGENTS_REPO} ${agentsDir}`, { stdio: 'pipe' })
+    execFileSync('git', ['clone', '--depth', '1', '--', AGENTS_REPO, agentsDir], { stdio: 'pipe' })
 
     // 3. Find the personality file
-    const personalityFile = execSync(
-      `find ${agentsDir} -name "${personalityId}.md" -type f | head -1`,
-      { encoding: 'utf-8' }
-    ).trim()
+    const personalityFile = findFile(agentsDir, `${personalityId}.md`)
 
     if (!personalityFile) {
       return {
@@ -71,21 +109,22 @@ export async function handler(event: BuildEvent) {
     // 4. Copy personality to src/personalities/
     const srcDir = `${workDir}/src/personalities`
     mkdirSync(srcDir, { recursive: true })
-    execSync(`cp "${personalityFile}" "${srcDir}/${personalityId}.md"`)
+    copyFileSync(personalityFile, join(srcDir, `${personalityId}.md`))
 
     // 5. Generate plugin.manifest.json
-    const manifest = generateManifest(personalityId, skills, agentName)
+    const manifest = generateManifest(personalityId, skills ?? [], agentName)
     writeFileSync(`${workDir}/plugin.manifest.json`, JSON.stringify(manifest, null, 2))
 
     // 6. Run build-plugin.sh
-    execSync(`cd ${workDir} && chmod +x build-plugin.sh && ./build-plugin.sh --clean`, {
+    execFileSync('bash', ['./build-plugin.sh', '--clean'], {
+      cwd: workDir,
       stdio: 'pipe',
       timeout: 45000,
     })
 
     // 7. Zip output
     const zipPath = `/tmp/${buildId}.zip`
-    execSync(`cd ${workDir}/plugins && zip -r ${zipPath} ai-maestro/`, { stdio: 'pipe' })
+    execFileSync('zip', ['-r', zipPath, 'ai-maestro/'], { cwd: `${workDir}/plugins`, stdio: 'pipe' })
 
     // 8. Upload to S3
     const zipContent = readFileSync(zipPath)
@@ -99,7 +138,8 @@ export async function handler(event: BuildEvent) {
     )
 
     // 9. Cleanup
-    execSync(`rm -rf ${workDir} ${zipPath}`, { stdio: 'pipe' })
+    rmSync(workDir, { recursive: true, force: true })
+    rmSync(zipPath, { force: true })
 
     return {
       statusCode: 200,
@@ -113,7 +153,7 @@ export async function handler(event: BuildEvent) {
   } catch (err) {
     // Cleanup on error
     try {
-      execSync(`rm -rf ${workDir}`, { stdio: 'pipe' })
+      rmSync(workDir, { recursive: true, force: true })
     } catch {
       // ignore cleanup errors
     }
