@@ -14,7 +14,8 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: nodejs22.x
+    # No Runtime here: the build-agent function is a container image, and SAM
+    # rejects Runtime on image functions. Zip functions set it themselves.
     MemorySize: 128
     Timeout: 10
     Environment:
@@ -48,22 +49,13 @@ Resources:
           - Id: ExpireBuilds
             Status: Enabled
             ExpirationInDays: 30
-      CorsConfiguration:
-        CorsRules:
-          - AllowedOrigins: ['*']
-            AllowedMethods: [GET]
-            AllowedHeaders: ['*']
-
-  BuildsBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref BuildsBucket
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal: '*'
-            Action: 's3:GetObject'
-            Resource: !Sub '${BuildsBucket.Arn}/builds/*'
+      # Private: objects are only reachable through presigned URLs made by the
+      # install-script function (15 minute expiry).
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
   SiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -124,8 +116,13 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub 'lolabot-install-script-${Environment}'
+      Runtime: nodejs22.x
       Handler: handler.handler
       CodeUri: ../lambda/install-script/
+      Policies:
+        # Reads builds/<id>.json and signs URLs for builds/<id>.zip
+        - S3ReadPolicy:
+            BucketName: !Ref BuildsBucket
       Events:
         Api:
           Type: HttpApi
@@ -133,11 +130,21 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /api/install/{id}
             Method: GET
+    Metadata:
+      # handler.ts is TypeScript: bundle it to JavaScript for the nodejs22.x runtime
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Target: es2022
+        Sourcemap: false
+        EntryPoints:
+          - handler.ts
 
   PersonalitiesFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub 'lolabot-personalities-${Environment}'
+      Runtime: nodejs22.x
       Handler: handler.handler
       CodeUri: ../lambda/personalities/
       Policies:

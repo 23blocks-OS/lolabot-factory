@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2026-10-28
+
+### Next.js 15 and a working build Lambda
+- `next` 14.2.35 to 15.5.28, `react` and `react-dom` 18 to 19 (Next 15's App Router needs React 19), `@types/react*` 19, `@types/node` 22. No source changes were needed for the upgrade; `output: 'export'` is unchanged. `overrides` pins the `postcss` that `next` bundles to `^8.5.23`. `npm audit`: 1 high and 1 moderate (the `next` and bundled `postcss` advisories) before, 0 after.
+- `lambda/build-agent`: the generated `plugin.manifest.json` used the old format (`mappings`, `url`), which the current `build-plugin.sh` of ai-maestro-plugins does not read. It now emits `sources` with `name`, `type`, `path` or `repo` + `ref`, and `map`, plus `output` and `plugin`. This is in `manifest.ts`, which checks the same rules as the builder (https git URLs only, relative paths without `..`, source-name alphabet). The skill `agent-management` now maps to the real directory `ai-maestro-agents-management`, and skills copy the scripts they need.
+- `lambda/build-agent`: added the missing `package.json`, lock file and `tsconfig.json` (AWS SDK v3 S3 client pinned, `@types/node` 22, TypeScript). The Dockerfile copied files that did not exist; it now uses `npm ci`, builds and prunes dev dependencies. It also installs `findutils`, which `build-plugin.sh` needs and the base image lacks (every build failed on `find: command not found`). Git runs with `HOME=/tmp`, and the agents repo is cloned outside the work folder because `--clean` deletes `.build-cache`.
+- `infrastructure/template.yaml`: `Runtime` in `Globals` made `sam validate --lint` fail on the container-image function; it is now set per zip function. The install-script function is bundled with esbuild (its handler is TypeScript, which the Node 22 runtime does not run).
+- Builds bucket is private: the public-read policy and open CORS rule are gone and Public Access Block is on. The install-script function creates a 15 minute presigned URL for the zip, so a leaked build ID no longer exposes the file. The response of `POST /api/build` no longer contains `downloadUrl` and the "Download ZIP" button is removed from the UI.
+- Checksum: the build Lambda writes `builds/<id>.json` with the sha256 of the zip (and sends the S3 `ChecksumSHA256`). The install script embeds the expected hash, checks it with `sha256sum` or `shasum` after the download, and stops before backing up or unzipping anything if it differs. Builds made before this release have no metadata file and answer 404.
+- Tests: `npm test` (vitest) covers the manifest generator (including a run against the real `build-plugin.sh` when `LOLABOT_PLUGINS_DIR` is set) and the install-script handler, including running the generated script with a good and a tampered zip. `npm run typecheck` covers the site and both lambdas.
+- Not changed: `lambda/personalities` has the same TypeScript-handler problem as install-script had; API Gateway HTTP APIs time out at 30 seconds while the build function allows 60.
+
 ## [0.1.1] - 2026-10-28
 
 ### Security: review and updates, 2026-10-28

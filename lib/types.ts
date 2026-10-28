@@ -38,7 +38,6 @@ export interface BuildResult {
   buildId: string
   status: 'pending' | 'building' | 'complete' | 'error'
   installUrl?: string
-  downloadUrl?: string
   error?: string
   personality?: {
     name: string

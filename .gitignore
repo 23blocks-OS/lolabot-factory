@@ -38,3 +38,7 @@ next-env.d.ts
 /.build-cache/
 
 # To regenerate personality catalog: npm run seed
+
+# lambda dependencies and SAM output
+/lambda/*/node_modules/
+/infrastructure/.aws-sam/
